@@ -351,10 +351,30 @@ impl Server {
 
                         // Now deliver any pub/sub messages to local connections
                         for (delivery_conn_id, msg) in deliveries_to_make {
-                            for (_, (_, conn)) in connections.iter_mut() {
+                            for (_, (stream, conn)) in connections.iter_mut() {
                                 if conn.connection_id == delivery_conn_id {
                                     conn.queue_pubsub_message(msg);
                                     conn.process_pubsub_messages();
+
+                                    // Write the queued messages to the socket
+                                    while let Some(response_data) = conn.pending_writes() {
+                                        let response_len = response_data.len();
+                                        match stream.write(response_data) {
+                                            Ok(n) => {
+                                                conn.consume_writes(n);
+                                                if n < response_len {
+                                                    break;
+                                                }
+                                            }
+                                            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                                break;
+                                            }
+                                            Err(e) => {
+                                                error!("Error writing pub/sub message: {}", e);
+                                                break;
+                                            }
+                                        }
+                                    }
                                     break;
                                 }
                             }
