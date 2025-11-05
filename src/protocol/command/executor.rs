@@ -1,4 +1,5 @@
 use super::client::ClientOperations;
+use super::command_table::{CommandDef, COMMAND_TABLE};
 use super::hash::HashOperations;
 use super::list::ListOperations;
 use super::Command;
@@ -301,154 +302,8 @@ impl CommandExecutor {
                 }
             }
 
-            Command::Command => {
-                // Return supported commands in Redis COMMAND format
-                // Each command entry: [name, arity, flags, first_key, last_key, step]
-                let commands = vec![
-                    // Basic commands
-                    vec![
-                        RespValue::BulkString(Some(Bytes::from_static(b"GET"))),
-                        RespValue::Integer(2), // arity (command + 1 key)
-                        RespValue::Array(Some(vec![RespValue::BulkString(Some(
-                            Bytes::from_static(b"readonly"),
-                        ))])),
-                        RespValue::Integer(1), // first key position
-                        RespValue::Integer(1), // last key position
-                        RespValue::Integer(1), // step
-                    ],
-                    vec![
-                        RespValue::BulkString(Some(Bytes::from_static(b"SET"))),
-                        RespValue::Integer(-3), // arity (variable, min 3)
-                        RespValue::Array(Some(vec![RespValue::BulkString(Some(
-                            Bytes::from_static(b"write"),
-                        ))])),
-                        RespValue::Integer(1),
-                        RespValue::Integer(1),
-                        RespValue::Integer(1),
-                    ],
-                    vec![
-                        RespValue::BulkString(Some(Bytes::from_static(b"DEL"))),
-                        RespValue::Integer(-2), // arity (variable, min 2)
-                        RespValue::Array(Some(vec![RespValue::BulkString(Some(
-                            Bytes::from_static(b"write"),
-                        ))])),
-                        RespValue::Integer(1),
-                        RespValue::Integer(-1), // all args are keys
-                        RespValue::Integer(1),
-                    ],
-                    vec![
-                        RespValue::BulkString(Some(Bytes::from_static(b"EXISTS"))),
-                        RespValue::Integer(-2),
-                        RespValue::Array(Some(vec![RespValue::BulkString(Some(
-                            Bytes::from_static(b"readonly"),
-                        ))])),
-                        RespValue::Integer(1),
-                        RespValue::Integer(-1),
-                        RespValue::Integer(1),
-                    ],
-                    // Atomic operations
-                    vec![
-                        RespValue::BulkString(Some(Bytes::from_static(b"INCR"))),
-                        RespValue::Integer(2),
-                        RespValue::Array(Some(vec![RespValue::BulkString(Some(
-                            Bytes::from_static(b"write"),
-                        ))])),
-                        RespValue::Integer(1),
-                        RespValue::Integer(1),
-                        RespValue::Integer(1),
-                    ],
-                    vec![
-                        RespValue::BulkString(Some(Bytes::from_static(b"DECR"))),
-                        RespValue::Integer(2),
-                        RespValue::Array(Some(vec![RespValue::BulkString(Some(
-                            Bytes::from_static(b"write"),
-                        ))])),
-                        RespValue::Integer(1),
-                        RespValue::Integer(1),
-                        RespValue::Integer(1),
-                    ],
-                    // TTL commands
-                    vec![
-                        RespValue::BulkString(Some(Bytes::from_static(b"EXPIRE"))),
-                        RespValue::Integer(3),
-                        RespValue::Array(Some(vec![RespValue::BulkString(Some(
-                            Bytes::from_static(b"write"),
-                        ))])),
-                        RespValue::Integer(1),
-                        RespValue::Integer(1),
-                        RespValue::Integer(1),
-                    ],
-                    vec![
-                        RespValue::BulkString(Some(Bytes::from_static(b"TTL"))),
-                        RespValue::Integer(2),
-                        RespValue::Array(Some(vec![RespValue::BulkString(Some(
-                            Bytes::from_static(b"readonly"),
-                        ))])),
-                        RespValue::Integer(1),
-                        RespValue::Integer(1),
-                        RespValue::Integer(1),
-                    ],
-                    // Bulk operations
-                    vec![
-                        RespValue::BulkString(Some(Bytes::from_static(b"MGET"))),
-                        RespValue::Integer(-2),
-                        RespValue::Array(Some(vec![RespValue::BulkString(Some(
-                            Bytes::from_static(b"readonly"),
-                        ))])),
-                        RespValue::Integer(1),
-                        RespValue::Integer(-1),
-                        RespValue::Integer(1),
-                    ],
-                    vec![
-                        RespValue::BulkString(Some(Bytes::from_static(b"MSET"))),
-                        RespValue::Integer(-3),
-                        RespValue::Array(Some(vec![RespValue::BulkString(Some(
-                            Bytes::from_static(b"write"),
-                        ))])),
-                        RespValue::Integer(1),
-                        RespValue::Integer(-1),
-                        RespValue::Integer(2), // key-value pairs
-                    ],
-                    // Server commands
-                    vec![
-                        RespValue::BulkString(Some(Bytes::from_static(b"PING"))),
-                        RespValue::Integer(-1),
-                        RespValue::Array(Some(vec![RespValue::BulkString(Some(
-                            Bytes::from_static(b"fast"),
-                        ))])),
-                        RespValue::Integer(0),
-                        RespValue::Integer(0),
-                        RespValue::Integer(0),
-                    ],
-                    // FeOx-specific
-                    vec![
-                        RespValue::BulkString(Some(Bytes::from_static(b"JSONPATCH"))),
-                        RespValue::Integer(3),
-                        RespValue::Array(Some(vec![RespValue::BulkString(Some(
-                            Bytes::from_static(b"write"),
-                        ))])),
-                        RespValue::Integer(1),
-                        RespValue::Integer(1),
-                        RespValue::Integer(1),
-                    ],
-                    vec![
-                        RespValue::BulkString(Some(Bytes::from_static(b"CAS"))),
-                        RespValue::Integer(4),
-                        RespValue::Array(Some(vec![RespValue::BulkString(Some(
-                            Bytes::from_static(b"write"),
-                        ))])),
-                        RespValue::Integer(1),
-                        RespValue::Integer(1),
-                        RespValue::Integer(1),
-                    ],
-                ];
-
-                RespValue::Array(Some(
-                    commands
-                        .into_iter()
-                        .map(|cmd| RespValue::Array(Some(cmd)))
-                        .collect(),
-                ))
+            Command::Command { subcommand, args } => {
+                Self::handle_command_subcommand(subcommand, args)
             }
 
             Command::Quit => RespValue::SimpleString(Bytes::from_static(b"OK")),
@@ -894,6 +749,76 @@ impl CommandExecutor {
             | Command::Unwatch => RespValue::Error(
                 "-ERR Transaction commands should be handled in connection layer".to_string(),
             ),
+        }
+    }
+
+    fn handle_command_subcommand(
+        subcommand: Option<String>,
+        args: Vec<Vec<u8>>,
+    ) -> RespValue {
+        match subcommand.as_deref() {
+            None => {
+                let commands: Vec<RespValue> = COMMAND_TABLE
+                    .iter()
+                    .map(|cmd| RespValue::Array(Some(cmd.to_resp_array())))
+                    .collect();
+                RespValue::Array(Some(commands))
+            }
+            Some(subcmd) => match subcmd.to_uppercase().as_str() {
+                "COUNT" => {
+                    let count = COMMAND_TABLE.len() as i64;
+                    RespValue::Integer(count)
+                }
+                "INFO" => {
+                    if args.is_empty() {
+                        let commands: Vec<RespValue> = COMMAND_TABLE
+                            .iter()
+                            .map(|cmd| RespValue::Array(Some(cmd.to_resp_array())))
+                            .collect();
+                        RespValue::Array(Some(commands))
+                    } else {
+                        let mut results = Vec::new();
+                        for arg in args {
+                            let cmd_name = String::from_utf8_lossy(&arg);
+                            if let Some(cmd_def) = CommandDef::find(&cmd_name) {
+                                results.push(RespValue::Array(Some(cmd_def.to_resp_array())));
+                            } else {
+                                results.push(RespValue::BulkString(None));
+                            }
+                        }
+                        RespValue::Array(Some(results))
+                    }
+                }
+                "DOCS" => {
+                    RespValue::Array(Some(vec![]))
+                }
+                "LIST" => {
+                    let names: Vec<RespValue> = COMMAND_TABLE
+                        .iter()
+                        .map(|cmd| RespValue::BulkString(Some(Bytes::from(cmd.name))))
+                        .collect();
+                    RespValue::Array(Some(names))
+                }
+                "HELP" => {
+                    let help_text = vec![
+                        "COMMAND",
+                        "COMMAND COUNT",
+                        "COMMAND INFO <command-name> [<command-name> ...]",
+                        "COMMAND LIST",
+                        "COMMAND DOCS [<command-name> ...]",
+                    ];
+                    RespValue::Array(Some(
+                        help_text
+                            .into_iter()
+                            .map(|s| RespValue::BulkString(Some(Bytes::from(s))))
+                            .collect(),
+                    ))
+                }
+                _ => RespValue::Error(format!(
+                    "ERR Unknown subcommand '{}'. Try COMMAND HELP.",
+                    subcmd
+                )),
+            },
         }
     }
 }
