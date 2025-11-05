@@ -1,10 +1,10 @@
 use crate::error::{Error, Result};
 use bytes::Bytes;
 use feoxdb::FeoxStore;
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use once_cell::sync::Lazy;
 
 struct MetadataTracker {
     pending_updates: HashMap<Vec<u8>, i64>,
@@ -38,9 +38,8 @@ impl MetadataTracker {
     }
 }
 
-static GLOBAL_METADATA_TRACKER: Lazy<Arc<RwLock<MetadataTracker>>> = Lazy::new(|| {
-    Arc::new(RwLock::new(MetadataTracker::new()))
-});
+static GLOBAL_METADATA_TRACKER: Lazy<Arc<RwLock<MetadataTracker>>> =
+    Lazy::new(|| Arc::new(RwLock::new(MetadataTracker::new())));
 
 #[derive(Clone)]
 pub struct HashOperations {
@@ -77,7 +76,11 @@ impl HashOperations {
         i64::from_le_bytes(data[0..8].try_into().unwrap())
     }
 
-    pub fn hset<'a>(&self, key: &[u8], fields: impl Iterator<Item = (&'a [u8], Bytes)>) -> Result<i64> {
+    pub fn hset<'a>(
+        &self,
+        key: &[u8],
+        fields: impl Iterator<Item = (&'a [u8], Bytes)>,
+    ) -> Result<i64> {
         let mut new_fields_count = 0i64;
         let mut prefix = Vec::with_capacity(key.len() + 5);
         prefix.extend_from_slice(b"H:");
@@ -101,7 +104,10 @@ impl HashOperations {
             meta_key.extend_from_slice(key);
             meta_key.extend_from_slice(b":meta");
 
-            GLOBAL_METADATA_TRACKER.write().unwrap().add_update(meta_key, new_fields_count);
+            GLOBAL_METADATA_TRACKER
+                .write()
+                .unwrap()
+                .add_update(meta_key, new_fields_count);
             self.maybe_flush_metadata();
         }
 
@@ -157,7 +163,10 @@ impl HashOperations {
         }
 
         if deleted_count > 0 {
-            GLOBAL_METADATA_TRACKER.write().unwrap().add_update(meta_key, -deleted_count);
+            GLOBAL_METADATA_TRACKER
+                .write()
+                .unwrap()
+                .add_update(meta_key, -deleted_count);
             self.maybe_flush_metadata();
         }
 
@@ -309,7 +318,10 @@ impl HashOperations {
                 Err(_) => delta,
             }
         } else {
-            GLOBAL_METADATA_TRACKER.write().unwrap().add_update(meta_key, 1);
+            GLOBAL_METADATA_TRACKER
+                .write()
+                .unwrap()
+                .add_update(meta_key, 1);
             self.maybe_flush_metadata();
             delta
         };

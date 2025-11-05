@@ -8,6 +8,7 @@ mod hash;
 mod list;
 mod parser;
 
+#[allow(unused_imports)]
 pub use command_table::{CommandDef, COMMAND_TABLE};
 pub use executor::CommandExecutor;
 

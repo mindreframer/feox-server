@@ -752,10 +752,7 @@ impl CommandExecutor {
         }
     }
 
-    fn handle_command_subcommand(
-        subcommand: Option<String>,
-        args: Vec<Vec<u8>>,
-    ) -> RespValue {
+    fn handle_command_subcommand(subcommand: Option<String>, args: Vec<Vec<u8>>) -> RespValue {
         match subcommand.as_deref() {
             None => {
                 let commands: Vec<RespValue> = COMMAND_TABLE
@@ -789,9 +786,7 @@ impl CommandExecutor {
                         RespValue::Array(Some(results))
                     }
                 }
-                "DOCS" => {
-                    RespValue::Array(Some(vec![]))
-                }
+                "DOCS" => RespValue::Array(Some(vec![])),
                 "LIST" => {
                     let names: Vec<RespValue> = COMMAND_TABLE
                         .iter()

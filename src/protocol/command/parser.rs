@@ -230,7 +230,8 @@ pub fn parse_command(value: RespValue) -> Result<Command, String> {
                             args: vec![],
                         })
                     } else {
-                        let subcommand = String::from_utf8_lossy(&extract_bytes(&args[0])?).to_string();
+                        let subcommand =
+                            String::from_utf8_lossy(&extract_bytes(&args[0])?).to_string();
                         let subargs = args
                             .into_iter()
                             .skip(1)
@@ -529,7 +530,6 @@ pub fn parse_command(value: RespValue) -> Result<Command, String> {
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Command::HMGet { key, fields })
                 }
-
 
                 b"HDEL" => {
                     if args.len() < 2 {
