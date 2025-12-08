@@ -2,11 +2,14 @@ use crate::protocol::resp::RespValue;
 use bytes::Bytes;
 
 mod client;
+mod command_table;
 mod executor;
 mod hash;
 mod list;
 mod parser;
 
+#[allow(unused_imports)]
+pub use command_table::{CommandDef, COMMAND_TABLE};
 pub use executor::CommandExecutor;
 
 #[derive(Debug, Clone)]
@@ -59,7 +62,10 @@ pub enum Command {
         action: String,
         args: Vec<Bytes>,
     },
-    Command,
+    Command {
+        subcommand: Option<String>,
+        args: Vec<Vec<u8>>,
+    },
     Quit,
     FlushDb,
 

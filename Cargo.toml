@@ -40,3 +40,7 @@ hwloc2 = { version = "2.2", optional = true }
 [features]
 default = []
 numa = ["hwloc2"]
+
+[dev-dependencies]
+redis = "0.23"
+tempfile = "3.8"

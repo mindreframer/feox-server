@@ -223,7 +223,26 @@ pub fn parse_command(value: RespValue) -> Result<Command, String> {
                     })
                 }
 
-                b"COMMAND" => Ok(Command::Command),
+                b"COMMAND" => {
+                    if args.is_empty() {
+                        Ok(Command::Command {
+                            subcommand: None,
+                            args: vec![],
+                        })
+                    } else {
+                        let subcommand =
+                            String::from_utf8_lossy(&extract_bytes(&args[0])?).to_string();
+                        let subargs = args
+                            .into_iter()
+                            .skip(1)
+                            .map(|arg| extract_bytes(&arg).map(|b| b.to_vec()))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        Ok(Command::Command {
+                            subcommand: Some(subcommand),
+                            args: subargs,
+                        })
+                    }
+                }
                 b"QUIT" => Ok(Command::Quit),
                 b"FLUSHDB" => Ok(Command::FlushDb),
 
@@ -511,7 +530,6 @@ pub fn parse_command(value: RespValue) -> Result<Command, String> {
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Command::HMGet { key, fields })
                 }
-
 
                 b"HDEL" => {
                     if args.len() < 2 {
