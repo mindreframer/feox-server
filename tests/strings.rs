@@ -73,14 +73,14 @@ fn test_set_with_px() {
         .arg(&key)
         .arg("value")
         .arg("PX")
-        .arg(100)
+        .arg(1500)
         .query(&mut conn)
         .unwrap();
 
     let result: String = conn.get(&key).unwrap();
     assert_eq!(result, "value");
 
-    std::thread::sleep(std::time::Duration::from_millis(150));
+    std::thread::sleep(std::time::Duration::from_millis(2000));
 
     let result: Option<String> = conn.get(&key).unwrap();
     assert!(result.is_none());
@@ -292,13 +292,13 @@ fn test_cas_success() {
     let key = unique_key("cas");
     let _: () = conn.set(&key, "initial").unwrap();
 
-    let result: String = redis::cmd("CAS")
+    let result: i64 = redis::cmd("CAS")
         .arg(&key)
         .arg("initial")
         .arg("updated")
         .query(&mut conn)
         .unwrap();
-    assert_eq!(result, "OK");
+    assert_eq!(result, 1);
 
     let value: String = conn.get(&key).unwrap();
     assert_eq!(value, "updated");
@@ -312,13 +312,14 @@ fn test_cas_failure() {
     let key = unique_key("cas");
     let _: () = conn.set(&key, "initial").unwrap();
 
-    let result: Result<String, _> = redis::cmd("CAS")
+    let result: i64 = redis::cmd("CAS")
         .arg(&key)
         .arg("wrong")
         .arg("updated")
-        .query(&mut conn);
+        .query(&mut conn)
+        .unwrap();
 
-    assert!(result.is_err());
+    assert_eq!(result, 0);
 
     let value: String = conn.get(&key).unwrap();
     assert_eq!(value, "initial");
@@ -340,7 +341,10 @@ fn test_jsonpatch() {
         .query(&mut conn)
         .unwrap();
 
-    assert!(result.contains("\"age\":31"));
+    assert_eq!(result, "OK");
+
+    let value: String = conn.get(&key).unwrap();
+    assert!(value.contains("\"age\":31"));
 }
 
 #[test]

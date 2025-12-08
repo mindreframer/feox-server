@@ -13,6 +13,9 @@
 /// Client registry for connection management
 pub mod client_registry;
 
+/// Watch registry for WATCH/MULTI/EXEC transactions
+pub mod watch_registry;
+
 /// Configuration management for the server
 pub mod config;
 

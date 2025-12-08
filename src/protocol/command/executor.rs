@@ -6,6 +6,7 @@ use super::Command;
 use crate::client_registry::ClientRegistry;
 use crate::config::Config;
 use crate::protocol::resp::RespValue;
+use crate::watch_registry::WatchRegistry;
 use bytes::Bytes;
 use feoxdb::FeoxStore;
 use std::sync::Arc;
@@ -126,6 +127,7 @@ impl CommandExecutor {
     #[inline(always)]
     pub fn fast_set(&self, key: &[u8], value: &[u8]) -> Result<(), feoxdb::FeoxError> {
         self.store.insert_with_timestamp(key, value, None)?;
+        WatchRegistry::notify_key_modified(key);
         Ok(())
     }
 
@@ -133,6 +135,7 @@ impl CommandExecutor {
     #[inline(always)]
     pub fn fast_set_bytes(&self, key: &[u8], value: bytes::Bytes) -> Result<(), feoxdb::FeoxError> {
         self.store.insert_bytes_with_timestamp(key, value, None)?;
+        WatchRegistry::notify_key_modified(key);
         Ok(())
     }
 
@@ -169,15 +172,19 @@ impl CommandExecutor {
                 };
 
                 match result {
-                    Ok(_) => RespValue::SimpleString(Bytes::from_static(b"OK")),
+                    Ok(_) => {
+                        WatchRegistry::notify_key_modified(&key);
+                        RespValue::SimpleString(Bytes::from_static(b"OK"))
+                    }
                     Err(e) => RespValue::Error(format!("ERR {}", e)),
                 }
             }
 
             Command::Del(keys) => {
                 let mut count = 0i64;
-                for key in keys {
-                    if self.store.delete(&key).is_ok() {
+                for key in &keys {
+                    if self.store.delete(key).is_ok() {
+                        WatchRegistry::notify_key_modified(key);
                         count += 1;
                     }
                 }
@@ -192,25 +199,13 @@ impl CommandExecutor {
                 RespValue::Integer(count)
             }
 
-            Command::Incr(key) => match self.store.atomic_increment(&key, 1) {
-                Ok(val) => RespValue::Integer(val),
-                Err(e) => RespValue::Error(format!("ERR {}", e)),
-            },
+            Command::Incr(key) => self.string_incr(&key, 1),
 
-            Command::IncrBy { key, delta } => match self.store.atomic_increment(&key, delta) {
-                Ok(val) => RespValue::Integer(val),
-                Err(e) => RespValue::Error(format!("ERR {}", e)),
-            },
+            Command::IncrBy { key, delta } => self.string_incr(&key, delta),
 
-            Command::Decr(key) => match self.store.atomic_increment(&key, -1) {
-                Ok(val) => RespValue::Integer(val),
-                Err(e) => RespValue::Error(format!("ERR {}", e)),
-            },
+            Command::Decr(key) => self.string_incr(&key, -1),
 
-            Command::DecrBy { key, delta } => match self.store.atomic_increment(&key, -delta) {
-                Ok(val) => RespValue::Integer(val),
-                Err(e) => RespValue::Error(format!("ERR {}", e)),
-            },
+            Command::DecrBy { key, delta } => self.string_incr(&key, -delta),
 
             Command::Expire { key, seconds } => match self.store.update_ttl(&key, seconds) {
                 Ok(_) => RespValue::Integer(1),
@@ -262,11 +257,12 @@ impl CommandExecutor {
             }
 
             Command::MSet(pairs) => {
-                for (key, value) in pairs {
+                for (key, value) in &pairs {
                     // Pass None to let FeOx generate a new timestamp
-                    if let Err(e) = self.store.insert_with_timestamp(&key, &value, None) {
+                    if let Err(e) = self.store.insert_with_timestamp(key, value, None) {
                         return RespValue::Error(format!("ERR {}", e));
                     }
+                    WatchRegistry::notify_key_modified(key);
                 }
                 RespValue::SimpleString(Bytes::from_static(b"OK"))
             }
@@ -285,11 +281,19 @@ impl CommandExecutor {
                         if args.is_empty() {
                             RespValue::Array(Some(vec![]))
                         } else {
-                            // Return nil for any specific config request
                             let mut results = Vec::new();
                             for arg in args {
+                                let key = String::from_utf8_lossy(&arg).to_lowercase();
+                                let value = match key.as_str() {
+                                    "maxmemory" => "0",
+                                    "maxclients" => "10000",
+                                    "timeout" => "0",
+                                    "tcp-keepalive" => "300",
+                                    "databases" => "16",
+                                    _ => "0",
+                                };
                                 results.push(RespValue::BulkString(Some(arg)));
-                                results.push(RespValue::BulkString(None)); // nil value
+                                results.push(RespValue::BulkString(Some(Bytes::from(value))));
                             }
                             RespValue::Array(Some(results))
                         }
@@ -471,10 +475,12 @@ impl CommandExecutor {
                         "# Server\r\n\
                         redis_version:feox-{}\r\n\
                         redis_mode:standalone\r\n\
+                        arch_bits:{}\r\n\
                         process_id:{}\r\n\
                         tcp_port:6379\r\n\
                         uptime_in_seconds:{}\r\n",
                         env!("CARGO_PKG_VERSION"),
+                        std::mem::size_of::<usize>() * 8,
                         std::process::id(),
                         uptime
                     ));
@@ -568,12 +574,18 @@ impl CommandExecutor {
             }
 
             Command::LPush { key, values } => match self.list_ops.lpush(&key, values) {
-                Ok(count) => RespValue::Integer(count),
+                Ok(count) => {
+                    WatchRegistry::notify_key_modified(&key);
+                    RespValue::Integer(count)
+                }
                 Err(e) => RespValue::Error(format!("ERR {}", e)),
             },
 
             Command::RPush { key, values } => match self.list_ops.rpush(&key, values) {
-                Ok(count) => RespValue::Integer(count),
+                Ok(count) => {
+                    WatchRegistry::notify_key_modified(&key);
+                    RespValue::Integer(count)
+                }
                 Err(e) => RespValue::Error(format!("ERR {}", e)),
             },
 
@@ -581,15 +593,18 @@ impl CommandExecutor {
                 Ok(values) => {
                     if values.is_empty() {
                         RespValue::BulkString(None)
-                    } else if values.len() == 1 {
-                        RespValue::BulkString(Some(values.into_iter().next().unwrap()))
                     } else {
-                        RespValue::Array(Some(
-                            values
-                                .into_iter()
-                                .map(|v| RespValue::BulkString(Some(v)))
-                                .collect(),
-                        ))
+                        WatchRegistry::notify_key_modified(&key);
+                        if values.len() == 1 {
+                            RespValue::BulkString(Some(values.into_iter().next().unwrap()))
+                        } else {
+                            RespValue::Array(Some(
+                                values
+                                    .into_iter()
+                                    .map(|v| RespValue::BulkString(Some(v)))
+                                    .collect(),
+                            ))
+                        }
                     }
                 }
                 Err(e) => RespValue::Error(format!("ERR {}", e)),
@@ -599,15 +614,18 @@ impl CommandExecutor {
                 Ok(values) => {
                     if values.is_empty() {
                         RespValue::BulkString(None)
-                    } else if values.len() == 1 {
-                        RespValue::BulkString(Some(values.into_iter().next().unwrap()))
                     } else {
-                        RespValue::Array(Some(
-                            values
-                                .into_iter()
-                                .map(|v| RespValue::BulkString(Some(v)))
-                                .collect(),
-                        ))
+                        WatchRegistry::notify_key_modified(&key);
+                        if values.len() == 1 {
+                            RespValue::BulkString(Some(values.into_iter().next().unwrap()))
+                        } else {
+                            RespValue::Array(Some(
+                                values
+                                    .into_iter()
+                                    .map(|v| RespValue::BulkString(Some(v)))
+                                    .collect(),
+                            ))
+                        }
                     }
                 }
                 Err(e) => RespValue::Error(format!("ERR {}", e)),
@@ -637,7 +655,10 @@ impl CommandExecutor {
             Command::HSet { key, fields } => {
                 let field_refs = fields.iter().map(|(f, v)| (f.as_slice(), v.clone()));
                 match self.hash_ops.hset(&key, field_refs) {
-                    Ok(count) => RespValue::Integer(count),
+                    Ok(count) => {
+                        WatchRegistry::notify_key_modified(&key);
+                        RespValue::Integer(count)
+                    }
                     Err(e) => RespValue::Error(format!("ERR {}", e)),
                 }
             }
@@ -662,7 +683,12 @@ impl CommandExecutor {
             },
 
             Command::HDel { key, fields } => match self.hash_ops.hdel(&key, fields) {
-                Ok(count) => RespValue::Integer(count),
+                Ok(count) => {
+                    if count > 0 {
+                        WatchRegistry::notify_key_modified(&key);
+                    }
+                    RespValue::Integer(count)
+                }
                 Err(e) => RespValue::Error(format!("ERR {}", e)),
             },
 
@@ -708,7 +734,10 @@ impl CommandExecutor {
 
             Command::HIncrBy { key, field, delta } => {
                 match self.hash_ops.hincrby(&key, &field, delta) {
-                    Ok(new_value) => RespValue::Integer(new_value),
+                    Ok(new_value) => {
+                        WatchRegistry::notify_key_modified(&key);
+                        RespValue::Integer(new_value)
+                    }
                     Err(e) => RespValue::Error(format!("ERR {}", e)),
                 }
             }
@@ -749,6 +778,43 @@ impl CommandExecutor {
             | Command::Unwatch => RespValue::Error(
                 "-ERR Transaction commands should be handled in connection layer".to_string(),
             ),
+        }
+    }
+
+    fn string_incr(&self, key: &[u8], delta: i64) -> RespValue {
+        // Try atomic_increment first (for native counter types)
+        if let Ok(val) = self.store.atomic_increment(key, delta) {
+            WatchRegistry::notify_key_modified(key);
+            return RespValue::Integer(val);
+        }
+
+        // Fallback: read string value, parse, increment, write back
+        let current: i64 = match self.store.get_bytes(key) {
+            Ok(bytes) => {
+                let s = String::from_utf8_lossy(&bytes);
+                match s.trim().parse::<i64>() {
+                    Ok(v) => v,
+                    Err(_) => {
+                        return RespValue::Error(
+                            "ERR value is not an integer or out of range".to_string(),
+                        )
+                    }
+                }
+            }
+            Err(feoxdb::FeoxError::KeyNotFound) => 0,
+            Err(e) => return RespValue::Error(format!("ERR {}", e)),
+        };
+
+        let new_val = current + delta;
+        match self
+            .store
+            .insert_bytes_with_timestamp(key, Bytes::from(new_val.to_string()), None)
+        {
+            Ok(_) => {
+                WatchRegistry::notify_key_modified(key);
+                RespValue::Integer(new_val)
+            }
+            Err(e) => RespValue::Error(format!("ERR {}", e)),
         }
     }
 

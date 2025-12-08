@@ -2,9 +2,10 @@ use crate::config::Config;
 use crate::protocol::resp::{write_resp_value, RespValue};
 use crate::protocol::{Command, CommandExecutor, RespParser};
 use crate::pubsub::PubSubMessage;
+use crate::watch_registry::WatchRegistry;
 use bytes::Bytes;
 use feoxdb::FeoxStore;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::os::fd::RawFd;
 use std::sync::Arc;
@@ -67,7 +68,7 @@ pub struct Connection {
     // Transaction state
     transaction_state: TransactionState,
     queued_commands: Vec<Command>,
-    watched_keys: HashSet<Vec<u8>>,
+    watched_keys: HashMap<Vec<u8>, u64>,
 }
 
 impl Connection {
@@ -124,7 +125,7 @@ impl Connection {
             flags: Vec::new(),
             transaction_state: TransactionState::None,
             queued_commands: Vec::new(),
-            watched_keys: HashSet::new(),
+            watched_keys: HashMap::new(),
         }
     }
 
@@ -240,6 +241,22 @@ impl Connection {
                         continue;
                     }
 
+                    // Check if any watched keys have been modified
+                    let watched_versions: Vec<(Vec<u8>, u64)> = self
+                        .watched_keys
+                        .iter()
+                        .map(|(k, v)| (k.clone(), *v))
+                        .collect();
+
+                    if !WatchRegistry::check_keys_unchanged(&watched_versions) {
+                        // Transaction aborted - watched key was modified
+                        self.transaction_state = TransactionState::None;
+                        self.queued_commands.clear();
+                        self.watched_keys.clear();
+                        write_resp_value(&mut self.write_buffer, &RespValue::BulkString(None));
+                        continue;
+                    }
+
                     // Execute all queued commands
                     let mut results = Vec::new();
                     for queued_cmd in self.queued_commands.drain(..) {
@@ -280,7 +297,8 @@ impl Connection {
                         continue;
                     }
                     for key in keys {
-                        self.watched_keys.insert(key.clone());
+                        let version = WatchRegistry::get_key_version(key);
+                        self.watched_keys.insert(key.clone(), version);
                     }
                     write_resp_value(
                         &mut self.write_buffer,

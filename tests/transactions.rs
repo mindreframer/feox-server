@@ -57,11 +57,11 @@ fn test_multi_exec_with_get() {
     let result: Vec<redis::Value> = redis::cmd("EXEC").query(&mut conn).unwrap();
     assert_eq!(result.len(), 3);
 
-    if let redis::Value::Data(data) = &result[0] {
+    if let redis::Value::BulkString(data) = &result[0] {
         assert_eq!(String::from_utf8_lossy(data), "initial");
     }
 
-    if let redis::Value::Data(data) = &result[2] {
+    if let redis::Value::BulkString(data) = &result[2] {
         assert_eq!(String::from_utf8_lossy(data), "updated");
     }
 }
