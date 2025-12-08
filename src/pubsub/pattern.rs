@@ -192,8 +192,6 @@ impl PatternTrie {
         }
 
         if let Some(ref wildcard) = node.wildcard_child {
-            matches.extend(wildcard.subscribers.clone());
-
             for i in pos..=channel.len() {
                 self.find_in_node(wildcard, channel, i, matches);
             }

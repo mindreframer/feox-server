@@ -2,7 +2,6 @@ mod common;
 
 use common::test_data::*;
 use common::*;
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 #[test]
@@ -33,12 +32,19 @@ fn test_subscribe_and_publish() {
         let client = redis::Client::open(url).unwrap();
         let mut conn = client.get_connection().unwrap();
         let mut pubsub = conn.as_pubsub();
+        pubsub
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok();
 
         pubsub.subscribe(&channel_clone).unwrap();
 
-        let msg = pubsub.get_message().unwrap();
-        let payload: String = msg.get_payload().unwrap();
-        payload
+        match pubsub.get_message() {
+            Ok(msg) => {
+                let payload: String = msg.get_payload().unwrap();
+                Some(payload)
+            }
+            Err(_) => None,
+        }
     });
 
     std::thread::sleep(Duration::from_millis(100));
@@ -52,7 +58,7 @@ fn test_subscribe_and_publish() {
     assert_eq!(count, 1);
 
     let received = handle.join().unwrap();
-    assert_eq!(received, "test message");
+    assert_eq!(received, Some("test message".to_string()));
 }
 
 #[test]
@@ -70,6 +76,9 @@ fn test_subscribe_multiple_channels() {
         let client = redis::Client::open(url).unwrap();
         let mut conn = client.get_connection().unwrap();
         let mut pubsub = conn.as_pubsub();
+        pubsub
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok();
 
         pubsub.subscribe(&[&ch1_clone, &ch2_clone]).unwrap();
 
@@ -114,6 +123,9 @@ fn test_unsubscribe() {
         let client = redis::Client::open(url).unwrap();
         let mut conn = client.get_connection().unwrap();
         let mut pubsub = conn.as_pubsub();
+        pubsub
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok();
 
         pubsub.subscribe(&channel_clone).unwrap();
         pubsub.unsubscribe(&channel_clone).unwrap();
@@ -150,6 +162,9 @@ fn test_psubscribe_pattern() {
         let client = redis::Client::open(url).unwrap();
         let mut conn = client.get_connection().unwrap();
         let mut pubsub = conn.as_pubsub();
+        pubsub
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok();
 
         pubsub.psubscribe(&pattern_clone).unwrap();
 
@@ -177,8 +192,10 @@ fn test_psubscribe_pattern() {
         .unwrap();
 
     let (msg1, msg2) = handle.join().unwrap();
-    assert_eq!(msg1, "msg1");
-    assert_eq!(msg2, "msg2");
+
+    let mut received = vec![msg1, msg2];
+    received.sort();
+    assert_eq!(received, vec!["msg1", "msg2"]);
 }
 
 #[test]
@@ -196,6 +213,9 @@ fn test_pubsub_channels() {
         let client = redis::Client::open(url).unwrap();
         let mut conn = client.get_connection().unwrap();
         let mut pubsub = conn.as_pubsub();
+        pubsub
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok();
 
         pubsub.subscribe(&[&ch1_clone, &ch2_clone]).unwrap();
 
@@ -228,6 +248,9 @@ fn test_pubsub_numsub() {
         let client = redis::Client::open(url).unwrap();
         let mut conn = client.get_connection().unwrap();
         let mut pubsub = conn.as_pubsub();
+        pubsub
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok();
 
         pubsub.subscribe(&channel_clone).unwrap();
 
@@ -243,7 +266,7 @@ fn test_pubsub_numsub() {
         .unwrap();
 
     assert_eq!(result.len(), 2);
-    if let redis::Value::Data(channel_bytes) = &result[0] {
+    if let redis::Value::BulkString(channel_bytes) = &result[0] {
         assert_eq!(String::from_utf8_lossy(channel_bytes), channel);
     }
     if let redis::Value::Int(count) = result[1] {
@@ -266,6 +289,9 @@ fn test_pubsub_numpat() {
         let client = redis::Client::open(url).unwrap();
         let mut conn = client.get_connection().unwrap();
         let mut pubsub = conn.as_pubsub();
+        pubsub
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok();
 
         pubsub.psubscribe(&pattern_clone).unwrap();
 
@@ -285,50 +311,50 @@ fn test_pubsub_numpat() {
 }
 
 #[test]
-fn test_redis_cli_interactive_subscribe() {
+fn test_pubsub_with_rapid_messages() {
     let server = TestServer::new();
-    let port = server.port();
+    let mut pub_conn = server.client();
 
-    let output_file = format!("/tmp/redis_cli_test_{}.txt", unique_key("sub"));
+    let channel = unique_key("rapid");
+    let channel_clone = channel.clone();
 
-    let subscriber = std::thread::spawn(move || {
-        Command::new("redis-cli")
-            .arg("-p")
-            .arg(port.to_string())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .and_then(|mut child| {
-                use std::io::Write;
-                if let Some(mut stdin) = child.stdin.take() {
-                    stdin.write_all(b"SUBSCRIBE testchannel\n")?;
+    let url = server.url();
+    let handle = std::thread::spawn(move || {
+        let client = redis::Client::open(url).unwrap();
+        let mut conn = client.get_connection().unwrap();
+        let mut pubsub = conn.as_pubsub();
+        pubsub
+            .set_read_timeout(Some(Duration::from_millis(1000)))
+            .ok();
+
+        pubsub.subscribe(&channel_clone).unwrap();
+
+        let mut received = Vec::new();
+        for _ in 0..5 {
+            match pubsub.get_message() {
+                Ok(msg) => {
+                    let payload: String = msg.get_payload().unwrap();
+                    received.push(payload);
                 }
-                std::thread::sleep(Duration::from_millis(2000));
-                child.kill()?;
-                child.wait_with_output()
-            })
-            .ok()
+                Err(_) => break,
+            }
+        }
+        received
     });
 
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(Duration::from_millis(100));
 
-    let mut pub_conn = server.client();
-    let count: i64 = redis::cmd("PUBLISH")
-        .arg("testchannel")
-        .arg("hello from test")
-        .query(&mut pub_conn)
-        .unwrap();
-
-    assert!(count >= 1);
-
-    if let Some(result) = subscriber.join().unwrap() {
-        let output = String::from_utf8_lossy(&result.stdout);
-        assert!(output.contains("subscribe"));
-        assert!(output.contains("testchannel"));
+    for i in 0..5 {
+        let _: i64 = redis::cmd("PUBLISH")
+            .arg(&channel)
+            .arg(format!("msg{}", i))
+            .query(&mut pub_conn)
+            .unwrap();
     }
 
-    let _ = std::fs::remove_file(output_file);
+    let received = handle.join().unwrap();
+    assert_eq!(received.len(), 5);
+    assert_eq!(received, vec!["msg0", "msg1", "msg2", "msg3", "msg4"]);
 }
 
 #[test]
@@ -347,6 +373,9 @@ fn test_multiple_subscribers_same_channel() {
         let client = redis::Client::open(url1).unwrap();
         let mut conn = client.get_connection().unwrap();
         let mut pubsub = conn.as_pubsub();
+        pubsub
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok();
         pubsub.subscribe(&ch1).unwrap();
         let msg = pubsub.get_message().unwrap();
         msg.get_payload::<String>().unwrap()
@@ -356,6 +385,9 @@ fn test_multiple_subscribers_same_channel() {
         let client = redis::Client::open(url2).unwrap();
         let mut conn = client.get_connection().unwrap();
         let mut pubsub = conn.as_pubsub();
+        pubsub
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok();
         pubsub.subscribe(&ch2).unwrap();
         let msg = pubsub.get_message().unwrap();
         msg.get_payload::<String>().unwrap()

@@ -15,7 +15,6 @@ pub struct Server {
     store: Arc<FeoxStore>,
     shutdown: AtomicBool,
     active_connections: AtomicUsize,
-    pubsub_registry: Arc<GlobalRegistry>,
     client_registry: Arc<ClientRegistry>,
 }
 
@@ -46,7 +45,6 @@ impl Server {
             )
         };
 
-        let (pubsub_registry, _receivers) = GlobalRegistry::new(config.threads);
         let client_registry = Arc::new(ClientRegistry::new());
 
         Ok(Self {
@@ -54,7 +52,6 @@ impl Server {
             store,
             shutdown: AtomicBool::new(false),
             active_connections: AtomicUsize::new(0),
-            pubsub_registry,
             client_registry,
         })
     }
@@ -75,8 +72,8 @@ impl Server {
             self.config.bind_addr, self.config.port
         );
 
-        // Create pub/sub receivers for each thread
-        let (_, mut pubsub_receivers) = GlobalRegistry::new(self.config.threads);
+        // Create pub/sub registry and receivers
+        let (pubsub_registry, mut pubsub_receivers) = GlobalRegistry::new(self.config.threads);
 
         // Spawn worker threads
         let mut handles = Vec::new();
@@ -84,7 +81,7 @@ impl Server {
         for thread_id in 0..self.config.threads {
             let server = Arc::clone(&self);
             let store = Arc::clone(&self.store);
-            let pubsub_registry = Arc::clone(&self.pubsub_registry);
+            let pubsub_registry = Arc::clone(&pubsub_registry);
             let pubsub_receiver = pubsub_receivers.remove(0);
             let client_registry = Arc::clone(&self.client_registry);
 
@@ -246,18 +243,52 @@ impl Server {
                         let mut deliveries_to_make = Vec::new();
 
                         // Handle client connection
-                        let should_close =
-                            if let Some((stream, connection)) = connections.get_mut(&token) {
-                                let mut should_close = false;
+                        let should_close = if let Some((stream, connection)) =
+                            connections.get_mut(&token)
+                        {
+                            let mut should_close = false;
 
-                                if event.is_readable() {
-                                    // Use a simple buffer (optimize with pool later if needed)
-                                    let mut buffer = vec![0u8; 8192];
+                            // Handle writable event - continue writing pending data
+                            if event.is_writable() {
+                                while let Some(response_data) = connection.pending_writes() {
+                                    let response_len = response_data.len();
+                                    match stream.write(response_data) {
+                                        Ok(n) => {
+                                            connection.consume_writes(n);
+                                            if n < response_len {
+                                                break;
+                                            }
+                                        }
+                                        Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            error!("Error writing: {}", e);
+                                            should_close = true;
+                                            break;
+                                        }
+                                    }
+                                }
 
+                                // If all data written, switch back to READABLE only
+                                if connection.pending_writes().is_none() {
+                                    let _ = poll.registry().reregister(
+                                        stream,
+                                        token,
+                                        Interest::READABLE,
+                                    );
+                                }
+                            }
+
+                            if event.is_readable() {
+                                // Loop to read all available data (important for edge-triggered kqueue)
+                                let mut buffer = vec![0u8; 65536];
+                                loop {
                                     match stream.read(&mut buffer) {
                                         Ok(0) => {
                                             // Connection closed
                                             should_close = true;
+                                            break;
                                         }
                                         Ok(n) => {
                                             // Process commands inline and get pub/sub operations
@@ -308,31 +339,47 @@ impl Server {
                                                             }
                                                         }
                                                     }
+
+                                                    // If there's still data to write, register for WRITABLE
+                                                    if connection.pending_writes().is_some() {
+                                                        let _ = poll.registry().reregister(
+                                                            stream,
+                                                            token,
+                                                            Interest::READABLE | Interest::WRITABLE,
+                                                        );
+                                                    }
                                                 }
                                                 Err(e) => {
                                                     error!("Error processing read: {}", e);
                                                     should_close = true;
+                                                    break;
                                                 }
                                             }
 
                                             if connection.is_closed() {
                                                 should_close = true;
+                                                break;
                                             }
                                         }
-                                        Err(e) if e.kind() != ErrorKind::WouldBlock => {
+                                        Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                            // No more data available, exit read loop
+                                            break;
+                                        }
+                                        Err(e) => {
                                             if e.kind() != ErrorKind::ConnectionReset {
                                                 error!("Error reading: {}", e);
                                             }
                                             should_close = true;
+                                            break;
                                         }
-                                        Err(_) => {} // WouldBlock - ignore
                                     }
                                 }
+                            }
 
-                                should_close
-                            } else {
-                                false
-                            };
+                            should_close
+                        } else {
+                            false
+                        };
 
                         if should_close {
                             if let Some((mut stream, mut connection)) = connections.remove(&token) {
@@ -351,10 +398,30 @@ impl Server {
 
                         // Now deliver any pub/sub messages to local connections
                         for (delivery_conn_id, msg) in deliveries_to_make {
-                            for (_, (_, conn)) in connections.iter_mut() {
+                            for (_, (stream, conn)) in connections.iter_mut() {
                                 if conn.connection_id == delivery_conn_id {
                                     conn.queue_pubsub_message(msg);
                                     conn.process_pubsub_messages();
+
+                                    // Write the queued messages to the socket
+                                    while let Some(response_data) = conn.pending_writes() {
+                                        let response_len = response_data.len();
+                                        match stream.write(response_data) {
+                                            Ok(n) => {
+                                                conn.consume_writes(n);
+                                                if n < response_len {
+                                                    break;
+                                                }
+                                            }
+                                            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                                break;
+                                            }
+                                            Err(e) => {
+                                                error!("Error writing pub/sub message: {}", e);
+                                                break;
+                                            }
+                                        }
+                                    }
                                     break;
                                 }
                             }
