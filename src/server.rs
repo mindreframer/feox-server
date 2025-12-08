@@ -243,142 +243,143 @@ impl Server {
                         let mut deliveries_to_make = Vec::new();
 
                         // Handle client connection
-                        let should_close =
-                            if let Some((stream, connection)) = connections.get_mut(&token) {
-                                let mut should_close = false;
+                        let should_close = if let Some((stream, connection)) =
+                            connections.get_mut(&token)
+                        {
+                            let mut should_close = false;
 
-                                // Handle writable event - continue writing pending data
-                                if event.is_writable() {
-                                    while let Some(response_data) = connection.pending_writes() {
-                                        let response_len = response_data.len();
-                                        match stream.write(response_data) {
-                                            Ok(n) => {
-                                                connection.consume_writes(n);
-                                                if n < response_len {
-                                                    break;
-                                                }
-                                            }
-                                            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                                                break;
-                                            }
-                                            Err(e) => {
-                                                error!("Error writing: {}", e);
-                                                should_close = true;
+                            // Handle writable event - continue writing pending data
+                            if event.is_writable() {
+                                while let Some(response_data) = connection.pending_writes() {
+                                    let response_len = response_data.len();
+                                    match stream.write(response_data) {
+                                        Ok(n) => {
+                                            connection.consume_writes(n);
+                                            if n < response_len {
                                                 break;
                                             }
                                         }
-                                    }
-
-                                    // If all data written, switch back to READABLE only
-                                    if connection.pending_writes().is_none() {
-                                        let _ = poll.registry().reregister(
-                                            stream,
-                                            token,
-                                            Interest::READABLE,
-                                        );
+                                        Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            error!("Error writing: {}", e);
+                                            should_close = true;
+                                            break;
+                                        }
                                     }
                                 }
 
-                                if event.is_readable() {
-                                    // Loop to read all available data (important for edge-triggered kqueue)
-                                    let mut buffer = vec![0u8; 65536];
-                                    loop {
-                                        match stream.read(&mut buffer) {
-                                            Ok(0) => {
-                                                // Connection closed
-                                                should_close = true;
-                                                break;
-                                            }
-                                            Ok(n) => {
-                                                // Process commands inline and get pub/sub operations
-                                                match connection.process_read(&buffer[..n]) {
-                                                    Ok(pubsub_ops) => {
-                                                        // Process pub/sub operations
-                                                        for op in pubsub_ops {
-                                                            let deliveries = handle_pubsub_operation(
-                                                                &mut pubsub_manager,
-                                                                &pubsub_registry,
-                                                                connection.connection_id,
-                                                                op,
-                                                                connection,
-                                                                thread_id,
-                                                            );
-                                                            deliveries_to_make.extend(deliveries);
-                                                        }
+                                // If all data written, switch back to READABLE only
+                                if connection.pending_writes().is_none() {
+                                    let _ = poll.registry().reregister(
+                                        stream,
+                                        token,
+                                        Interest::READABLE,
+                                    );
+                                }
+                            }
 
-                                                        // Process any queued pub/sub messages
-                                                        connection.process_pubsub_messages();
+                            if event.is_readable() {
+                                // Loop to read all available data (important for edge-triggered kqueue)
+                                let mut buffer = vec![0u8; 65536];
+                                loop {
+                                    match stream.read(&mut buffer) {
+                                        Ok(0) => {
+                                            // Connection closed
+                                            should_close = true;
+                                            break;
+                                        }
+                                        Ok(n) => {
+                                            // Process commands inline and get pub/sub operations
+                                            match connection.process_read(&buffer[..n]) {
+                                                Ok(pubsub_ops) => {
+                                                    // Process pub/sub operations
+                                                    for op in pubsub_ops {
+                                                        let deliveries = handle_pubsub_operation(
+                                                            &mut pubsub_manager,
+                                                            &pubsub_registry,
+                                                            connection.connection_id,
+                                                            op,
+                                                            connection,
+                                                            thread_id,
+                                                        );
+                                                        deliveries_to_make.extend(deliveries);
+                                                    }
 
-                                                        // Update client info in registry if needed
-                                                        client_registry.update(connection);
+                                                    // Process any queued pub/sub messages
+                                                    connection.process_pubsub_messages();
 
-                                                        // Write response immediately
-                                                        while let Some(response_data) =
-                                                            connection.pending_writes()
-                                                        {
-                                                            let response_len = response_data.len();
-                                                            match stream.write(response_data) {
-                                                                Ok(n) => {
-                                                                    connection.consume_writes(n);
-                                                                    if n < response_len {
-                                                                        // Partial write, would block
-                                                                        break;
-                                                                    }
-                                                                }
-                                                                Err(e)
-                                                                    if e.kind()
-                                                                        == ErrorKind::WouldBlock =>
-                                                                {
-                                                                    break;
-                                                                }
-                                                                Err(e) => {
-                                                                    error!("Error writing: {}", e);
-                                                                    should_close = true;
+                                                    // Update client info in registry if needed
+                                                    client_registry.update(connection);
+
+                                                    // Write response immediately
+                                                    while let Some(response_data) =
+                                                        connection.pending_writes()
+                                                    {
+                                                        let response_len = response_data.len();
+                                                        match stream.write(response_data) {
+                                                            Ok(n) => {
+                                                                connection.consume_writes(n);
+                                                                if n < response_len {
+                                                                    // Partial write, would block
                                                                     break;
                                                                 }
                                                             }
-                                                        }
-
-                                                        // If there's still data to write, register for WRITABLE
-                                                        if connection.pending_writes().is_some() {
-                                                            let _ = poll.registry().reregister(
-                                                                stream,
-                                                                token,
-                                                                Interest::READABLE | Interest::WRITABLE,
-                                                            );
+                                                            Err(e)
+                                                                if e.kind()
+                                                                    == ErrorKind::WouldBlock =>
+                                                            {
+                                                                break;
+                                                            }
+                                                            Err(e) => {
+                                                                error!("Error writing: {}", e);
+                                                                should_close = true;
+                                                                break;
+                                                            }
                                                         }
                                                     }
-                                                    Err(e) => {
-                                                        error!("Error processing read: {}", e);
-                                                        should_close = true;
-                                                        break;
+
+                                                    // If there's still data to write, register for WRITABLE
+                                                    if connection.pending_writes().is_some() {
+                                                        let _ = poll.registry().reregister(
+                                                            stream,
+                                                            token,
+                                                            Interest::READABLE | Interest::WRITABLE,
+                                                        );
                                                     }
                                                 }
-
-                                                if connection.is_closed() {
+                                                Err(e) => {
+                                                    error!("Error processing read: {}", e);
                                                     should_close = true;
                                                     break;
                                                 }
                                             }
-                                            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                                                // No more data available, exit read loop
-                                                break;
-                                            }
-                                            Err(e) => {
-                                                if e.kind() != ErrorKind::ConnectionReset {
-                                                    error!("Error reading: {}", e);
-                                                }
+
+                                            if connection.is_closed() {
                                                 should_close = true;
                                                 break;
                                             }
                                         }
+                                        Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                                            // No more data available, exit read loop
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            if e.kind() != ErrorKind::ConnectionReset {
+                                                error!("Error reading: {}", e);
+                                            }
+                                            should_close = true;
+                                            break;
+                                        }
                                     }
                                 }
+                            }
 
-                                should_close
-                            } else {
-                                false
-                            };
+                            should_close
+                        } else {
+                            false
+                        };
 
                         if should_close {
                             if let Some((mut stream, mut connection)) = connections.remove(&token) {
