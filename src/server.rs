@@ -15,7 +15,6 @@ pub struct Server {
     store: Arc<FeoxStore>,
     shutdown: AtomicBool,
     active_connections: AtomicUsize,
-    pubsub_registry: Arc<GlobalRegistry>,
     client_registry: Arc<ClientRegistry>,
 }
 
@@ -46,7 +45,6 @@ impl Server {
             )
         };
 
-        let (pubsub_registry, _receivers) = GlobalRegistry::new(config.threads);
         let client_registry = Arc::new(ClientRegistry::new());
 
         Ok(Self {
@@ -54,7 +52,6 @@ impl Server {
             store,
             shutdown: AtomicBool::new(false),
             active_connections: AtomicUsize::new(0),
-            pubsub_registry,
             client_registry,
         })
     }
@@ -75,8 +72,8 @@ impl Server {
             self.config.bind_addr, self.config.port
         );
 
-        // Create pub/sub receivers for each thread
-        let (_, mut pubsub_receivers) = GlobalRegistry::new(self.config.threads);
+        // Create pub/sub registry and receivers
+        let (pubsub_registry, mut pubsub_receivers) = GlobalRegistry::new(self.config.threads);
 
         // Spawn worker threads
         let mut handles = Vec::new();
@@ -84,7 +81,7 @@ impl Server {
         for thread_id in 0..self.config.threads {
             let server = Arc::clone(&self);
             let store = Arc::clone(&self.store);
-            let pubsub_registry = Arc::clone(&self.pubsub_registry);
+            let pubsub_registry = Arc::clone(&pubsub_registry);
             let pubsub_receiver = pubsub_receivers.remove(0);
             let client_registry = Arc::clone(&self.client_registry);
 
